@@ -1,17 +1,21 @@
 import 'package:flutter/material.dart';
 import 'package:spectrumapp/services/database_service.dart';
 import 'package:intl/intl.dart';
-import 'package:spectrumapp/services/data_process.dart'; // Import the data processing service
+import 'package:path_provider/path_provider.dart'; // This import provides getDownloadsDirectory
+import 'dart:io';
+import 'package:csv/csv.dart';
+import 'package:permission_handler/permission_handler.dart'; // Ensure this exact import for Permission class
 
 class DataRecordPage extends StatefulWidget {
-  const DataRecordPage({Key? key}) : super(key: key);
+  const DataRecordPage({super.key});
 
   @override
-  _DataRecordPageState createState() => _DataRecordPageState();
+  State<DataRecordPage> createState() => _DataRecordPageState();
 }
 
 class _DataRecordPageState extends State<DataRecordPage> {
-  late Future<List<Map<String, dynamic>>> _measurementsFuture;
+  List<Map<String, dynamic>> _measurements = [];
+  bool _isLoading = true;
 
   @override
   void initState() {
@@ -20,195 +24,259 @@ class _DataRecordPageState extends State<DataRecordPage> {
   }
 
   Future<void> _loadMeasurements() async {
-    _measurementsFuture = DatabaseHelper.instance.getAllMeasurements();
+    setState(() {
+      _isLoading = true;
+    });
+    final data = await DatabaseHelper.instance.getAllMeasurements();
+    setState(() {
+      _measurements = data;
+      _isLoading = false;
+    });
   }
 
   Future<void> _deleteMeasurement(int id) async {
     await DatabaseHelper.instance.deleteMeasurement(id);
-    _loadMeasurements();
-    setState(() {});
+    _loadMeasurements(); // Refresh the list
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(const SnackBar(content: Text('Measurement deleted.')));
   }
 
   Future<void> _deleteAllMeasurements() async {
-    showDialog(
+    // Show a confirmation dialog
+    final confirmed = await showDialog<bool>(
       context: context,
       builder: (BuildContext context) {
         return AlertDialog(
-          title: const Text(
-            'Confirm Delete',
-            style: TextStyle(fontWeight: FontWeight.bold),
-          ),
+          title: const Text('Confirm Deletion'),
           content: const Text(
-            'Are you sure you want to delete all data? This action cannot be undone.',
+            'Are you sure you want to delete all recorded data? This action cannot be undone.',
           ),
           actions: <Widget>[
             TextButton(
-              onPressed: () => Navigator.of(context).pop(),
-              child: const Text(
-                'Cancel',
-                style: TextStyle(fontWeight: FontWeight.bold),
-              ),
+              onPressed: () => Navigator.of(context).pop(false),
+              child: const Text('Cancel'),
             ),
             TextButton(
-              onPressed: () async {
-                await DatabaseHelper.instance.deleteAllMeasurements();
-                _loadMeasurements();
-                setState(() {});
-                Navigator.of(context).pop();
-              },
-              child: const Text(
-                'Delete All',
-                style: TextStyle(color: Colors.red),
-              ),
+              onPressed: () => Navigator.of(context).pop(true),
+              child: const Text('Delete All'),
             ),
           ],
         );
       },
     );
+
+    if (confirmed == true) {
+      await DatabaseHelper.instance.deleteAllMeasurements();
+      _loadMeasurements(); // Refresh the list
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('All measurements deleted.')),
+      );
+    }
+  }
+
+  Future<void> _exportDataToCsv() async {
+    if (_measurements.isEmpty) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('No data to export.')));
+      return;
+    }
+
+    // Request storage permission before exporting
+    // For Android 10+ (API 29+), Permission.storage often maps to MediaStore access
+    // when using getDownloadsDirectory, and might not show a direct "storage" prompt
+    // but rather rely on implicit access or a different prompt type if needed.
+    var status = await Permission.storage.request();
+    if (status.isDenied) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Storage permission denied. Cannot export data.'),
+        ),
+      );
+      return;
+    }
+    if (status.isPermanentlyDenied) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Storage permission permanently denied. Please enable it in app settings.',
+          ),
+        ),
+      );
+      await openAppSettings(); // Opens app settings for the user to manually grant
+      return;
+    }
+
+    // Prepare CSV data
+    List<List<dynamic>> csvData = [];
+
+    // Add header row
+    csvData.add([
+      'ID',
+      'Timestamp',
+      'Temperature (°C)',
+      'Lux (Lux)',
+      'F1',
+      'F2',
+      'F3',
+      'F4',
+      'F5',
+      'F6',
+      'F7',
+      'F8',
+      'Clear',
+      'NIR',
+    ]);
+
+    // Add data rows
+    for (var measurement in _measurements) {
+      final timestamp = DateTime.parse(
+        measurement[DatabaseHelper.columnTimestamp],
+      );
+      final formattedTimestamp = DateFormat(
+        'yyyy-MM-dd HH:mm:ss',
+      ).format(timestamp);
+      final spectrumDataString =
+          measurement[DatabaseHelper.columnSpectrumData] as String?;
+      List<double> spectrumData = [];
+      if (spectrumDataString != null && spectrumDataString.isNotEmpty) {
+        spectrumData =
+            spectrumDataString.split(',').map((e) => double.parse(e)).toList();
+      }
+
+      // Ensure spectrumData has 10 elements, pad with 0.0 if less
+      while (spectrumData.length < 10) {
+        spectrumData.add(0.0);
+      }
+
+      csvData.add([
+        measurement[DatabaseHelper.columnId],
+        formattedTimestamp,
+        measurement[DatabaseHelper.columnTemperature]?.toStringAsFixed(1) ??
+            'N/A',
+        measurement[DatabaseHelper.columnLux]?.toStringAsFixed(1) ?? 'N/A',
+        // Add all 10 spectrum data channels
+        ...spectrumData.map((e) => e.toStringAsFixed(2)).toList(),
+      ]);
+    }
+
+    // Convert list of lists to CSV string
+    String csv = const ListToCsvConverter().convert(csvData);
+
+    try {
+      // Get the Downloads directory (user-accessible public directory)
+      final Directory? directory =
+          await getDownloadsDirectory(); // Corrected function call
+
+      if (directory == null) {
+        throw Exception(
+          "Could not get Downloads directory. It might not be supported on this platform or device.",
+        );
+      }
+
+      final String fileName =
+          'spectrum_data_${DateFormat('yyyyMMdd_HHmmss').format(DateTime.now())}.csv';
+      final File file = File('${directory.path}/$fileName');
+
+      // Ensure the directory exists (e.g., if 'Download' folder was somehow deleted)
+      if (!await directory.exists()) {
+        await directory.create(recursive: true);
+      }
+
+      // Write the CSV content to the file
+      await file.writeAsString(csv);
+
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Data exported to ${file.path}')));
+      print('CSV exported to: ${file.path}');
+    } catch (e) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Error exporting data: $e')));
+      print('Error exporting data: $e');
+    }
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: const Color.fromARGB(255, 233, 233, 233),
-      appBar: AppBar(
-        backgroundColor: Colors.white,
-        title: const Text(
-          "Data Records",
-          style: TextStyle(fontWeight: FontWeight.bold, fontSize: 20),
-        ),
-        actions: <Widget>[
-          IconButton(
-            icon: const Icon(Icons.delete_forever),
+      body:
+          _isLoading
+              ? const Center(child: CircularProgressIndicator())
+              : _measurements.isEmpty
+              ? const Center(child: Text('No data recorded yet.'))
+              : ListView.builder(
+                itemCount: _measurements.length,
+                itemBuilder: (context, index) {
+                  final measurement = _measurements[index];
+                  final timestamp = DateTime.parse(
+                    measurement[DatabaseHelper.columnTimestamp],
+                  );
+                  final spectrumData =
+                      measurement[DatabaseHelper.columnSpectrumData]
+                          ?.split(',')
+                          .map((e) => double.parse(e))
+                          .toList() ??
+                      [];
+                  final temperature =
+                      measurement[DatabaseHelper.columnTemperature];
+                  final lux = measurement[DatabaseHelper.columnLux];
+
+                  return Card(
+                    margin: const EdgeInsets.all(8.0),
+                    child: Padding(
+                      padding: const EdgeInsets.all(16.0),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'Timestamp: ${DateFormat('yyyy-MM-dd HH:mm:ss').format(timestamp)}',
+                            style: const TextStyle(fontWeight: FontWeight.bold),
+                          ),
+                          Text(
+                            'Temperature: ${temperature?.toStringAsFixed(1) ?? 'N/A'} °C',
+                          ),
+                          Text('Lux: ${lux?.toStringAsFixed(1) ?? 'N/A'} Lux'),
+                          Text(
+                            'Spectrum Data (F1-F8, Clear, NIR): ${spectrumData.map((e) => e.toStringAsFixed(2)).join(', ')}',
+                          ),
+                          Align(
+                            alignment: Alignment.bottomRight,
+                            child: IconButton(
+                              icon: const Icon(Icons.delete, color: Colors.red),
+                              onPressed:
+                                  () => _deleteMeasurement(
+                                    measurement[DatabaseHelper.columnId],
+                                  ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  );
+                },
+              ),
+      floatingActionButton: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          FloatingActionButton.extended(
+            onPressed: _exportDataToCsv,
+            label: const Text('Export Data'),
+            icon: const Icon(Icons.download),
+            backgroundColor: Colors.blue,
+          ),
+          const SizedBox(height: 10),
+          FloatingActionButton.extended(
             onPressed: _deleteAllMeasurements,
+            label: const Text('Delete All Data'),
+            icon: const Icon(Icons.delete_forever),
+            backgroundColor: Colors.red,
           ),
         ],
       ),
-      body: FutureBuilder<List<Map<String, dynamic>>>(
-        future: _measurementsFuture,
-        builder: (context, snapshot) {
-          if (snapshot.hasData) {
-            final measurements = snapshot.data!;
-            return ListView.builder(
-              itemCount: measurements.length,
-              itemBuilder: (context, index) {
-                final measurement = measurements[index];
-                final spectrumValues =
-                    (measurement['spectrumData'] as String?)?.split(',') ?? [];
-
-                // Extract Clear and NIR values if available
-                String clearValue = 'N/A';
-                String nirValue = 'N/A';
-                if (spectrumValues.length >= 10) {
-                  clearValue = spectrumValues[8];
-                  nirValue = spectrumValues[9];
-                }
-
-                // Retrieve raw temperature and lux values
-                final rawTemperature =
-                    (measurement['temperature'] as double?) ?? 0.0;
-                final rawLux = (measurement['lux'] as double?) ?? 0.0;
-
-                // Apply linear regression for calibrated values
-                final calibratedTemperature = DataProcessor.processTemperature(
-                  rawTemperature,
-                );
-                final calibratedLux = DataProcessor.processLux(rawLux);
-
-                return Container(
-                  margin: const EdgeInsets.symmetric(
-                    vertical: 8.0,
-                    horizontal: 16.0,
-                  ),
-                  padding: const EdgeInsets.all(16.0),
-                  decoration: BoxDecoration(
-                    color: Colors.white,
-                    borderRadius: BorderRadius.circular(10.0),
-                    boxShadow: const [
-                      BoxShadow(
-                        color: Color.fromARGB(50, 0, 0, 0),
-                        spreadRadius: 2,
-                        blurRadius: 5,
-                        offset: Offset(0, 3),
-                      ),
-                    ],
-                  ),
-                  child: Row(
-                    children: [
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              'Timestamp: ${DateFormat('yyyy-MM-dd HH:mm:ss').format(DateTime.parse(measurement['timestamp']))}',
-                              style: const TextStyle(
-                                fontWeight: FontWeight.bold,
-                              ),
-                            ),
-                            if (spectrumValues.length >= 8)
-                              Row(
-                                children: [
-                                  Column(
-                                    crossAxisAlignment:
-                                        CrossAxisAlignment.start,
-                                    children: [
-                                      Text('F1: ${spectrumValues[0]}'),
-                                      Text('F2: ${spectrumValues[1]}'),
-                                      Text('F3: ${spectrumValues[2]}'),
-                                      Text('F4: ${spectrumValues[3]}'),
-                                    ],
-                                  ),
-                                  SizedBox(width: 20),
-                                  Column(
-                                    crossAxisAlignment:
-                                        CrossAxisAlignment.start,
-                                    children: [
-                                      Text('F5: ${spectrumValues[4]}'),
-                                      Text('F6: ${spectrumValues[5]}'),
-                                      Text('F7: ${spectrumValues[6]}'),
-                                      Text('F8: ${spectrumValues[7]}'),
-                                    ],
-                                  ),
-                                ],
-                              ),
-
-                            // Display Clear and NIR values
-                            Text('Clear: $clearValue'),
-                            Text('NIR: $nirValue'),
-
-                            if (spectrumValues.length < 8 &&
-                                spectrumValues.isNotEmpty)
-                              Text(
-                                'Spectrum Data: ${measurement['spectrumData']}',
-                              ),
-                            if (spectrumValues.isEmpty)
-                              const Text('Spectrum Data: -'),
-                            // Display calibrated temperature and lux
-                            Text(
-                              'Temp: ${calibratedTemperature.toStringAsFixed(1)}° C',
-                            ),
-                            Text('Lux: ${calibratedLux.toStringAsFixed(1)}'),
-                          ],
-                        ),
-                      ),
-                      IconButton(
-                        icon: const Icon(Icons.delete),
-                        onPressed: () {
-                          _deleteMeasurement(measurement['id']);
-                        },
-                      ),
-                    ],
-                  ),
-                );
-              },
-            );
-          } else if (snapshot.hasError) {
-            return Center(child: Text('Error: ${snapshot.error}'));
-          } else {
-            return const Center(child: CircularProgressIndicator());
-          }
-        },
-      ),
+      floatingActionButtonLocation: FloatingActionButtonLocation.centerFloat,
     );
   }
 }

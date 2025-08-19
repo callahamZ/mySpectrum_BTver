@@ -26,24 +26,9 @@ class _SettingsPageState extends State<SettingsPage> {
   final List<String> _rawDataBuffer = [];
   final int _maxBufferLines = 100;
 
-  final TextEditingController _ssidController = TextEditingController();
-  final TextEditingController _passwordController = TextEditingController();
-  final TextEditingController _aTimeController = TextEditingController();
-  final TextEditingController _aStepController = TextEditingController();
-  String? _selectedGain = '256x';
-  final List<String> _gainOptions = [
-    '0.5x',
-    '1x',
-    '2x',
-    '4x',
-    '8x',
-    '16x',
-    '32x',
-    '64x',
-    '128x',
-    '256x',
-    '512x',
-  ];
+  // New state variables for AS7341 LED Flash
+  bool _isFlashOn = false;
+  double _brightnessLevel = 20.0;
 
   @override
   void initState() {
@@ -62,10 +47,6 @@ class _SettingsPageState extends State<SettingsPage> {
   @override
   void dispose() {
     _connectionService.onRawDataReceived = null;
-    _ssidController.dispose();
-    _passwordController.dispose();
-    _aTimeController.dispose();
-    _aStepController.dispose();
     super.dispose();
   }
 
@@ -205,29 +186,21 @@ class _SettingsPageState extends State<SettingsPage> {
     }
   }
 
-  // Placeholder functions for Wi-Fi and AS7341 parameters
-  void _setWifiParameters() {
-    print(
-      'SSID: ${_ssidController.text}, Password: ${_passwordController.text}',
-    );
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Wi-Fi parameters set (placeholder)')),
-    );
-    _connectionService.sendData(
-      "SET_WIFI:${_ssidController.text},${_passwordController.text}\n",
-    );
-  }
+  // New method to handle sending the LED Flash configuration
+  void _setLEDParameters() {
+    // Determine the boolean value (1 for ON, 0 for OFF)
+    final flashValue = _isFlashOn ? 1 : 0;
+    // Format the brightness level, rounding to the nearest integer
+    final brightnessValue = _brightnessLevel.round();
+    // Construct the final serial data string
+    final dataToSend = "@SetLED,$flashValue,$brightnessValue\n";
 
-  void _setAS7341Parameters() {
-    print(
-      'ATime: ${_aTimeController.text}, AStep: ${_aStepController.text}, Gain: $_selectedGain',
-    );
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('AS7341 parameters set (placeholder)')),
-    );
-    _connectionService.sendData(
-      "SET_AS7341:${_aTimeController.text},${_aStepController.text},${_selectedGain}\n",
-    );
+    // Call the sendData method from the connection service
+    _connectionService.sendData(dataToSend);
+
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text('Sent command: $dataToSend')));
   }
 
   @override
@@ -290,103 +263,40 @@ class _SettingsPageState extends State<SettingsPage> {
               "Bluetooth Connection",
               style: TextStyle(fontWeight: FontWeight.bold, fontSize: 20),
             ),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                Expanded(
-                  flex: 4,
-                  child: Container(
-                    margin: const EdgeInsets.only(top: 8),
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 16,
-                      vertical: 10,
-                    ),
-                    decoration: BoxDecoration(
-                      color: Colors.white,
-                      borderRadius: BorderRadius.circular(10.0),
-                      boxShadow: const [
-                        BoxShadow(
-                          color: Color.fromARGB(50, 0, 0, 0),
-                          spreadRadius: 2,
-                          blurRadius: 5,
-                          offset: Offset(0, 3),
-                        ),
-                      ],
-                    ),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        const Text(
-                          "Available Devices",
-                          style: TextStyle(fontWeight: FontWeight.bold),
-                        ),
-                        const Divider(),
-                        SizedBox(
-                          height: 150,
-                          child:
-                              _bluetoothDevices.isEmpty && !_isDiscovering
-                                  ? const Center(
-                                    child: Text(
-                                      "No devices found. Tap refresh to scan.",
-                                    ),
-                                  )
-                                  : ListView.builder(
-                                    physics:
-                                        const AlwaysScrollableScrollPhysics(), // Always show scroll indicator
-                                    itemCount: _bluetoothDevices.length,
-                                    itemBuilder: (context, index) {
-                                      BluetoothDevice device =
-                                          _bluetoothDevices[index];
-                                      return ListTile(
-                                        title: Text(
-                                          device.name ?? "Unknown Device",
-                                        ),
-                                        subtitle: Text(device.address),
-                                        trailing:
-                                            device.isConnected
-                                                ? const Icon(
-                                                  Icons.bluetooth_connected,
-                                                  color: Colors.green,
-                                                )
-                                                : null,
-                                        selected:
-                                            _selectedBluetoothDevice?.address ==
-                                            device.address,
-                                        selectedTileColor:
-                                            Colors
-                                                .blue
-                                                .shade100, // Highlight color for selected tile
-                                        onTap: () {
-                                          setState(() {
-                                            _selectedBluetoothDevice = device;
-                                          });
-                                          ScaffoldMessenger.of(
-                                            context,
-                                          ).showSnackBar(
-                                            SnackBar(
-                                              content: Text(
-                                                'Selected: ${device.name ?? device.address}',
-                                              ),
-                                            ),
-                                          );
-                                        },
-                                      );
-                                    },
-                                  ),
-                        ),
-                      ],
-                    ),
+            // Updated Bluetooth section to place the refresh icon inside the container
+            Container(
+              margin: const EdgeInsets.only(top: 8),
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(10.0),
+                boxShadow: const [
+                  BoxShadow(
+                    color: Color.fromARGB(50, 0, 0, 0),
+                    spreadRadius: 2,
+                    blurRadius: 5,
+                    offset: Offset(0, 3),
                   ),
-                ),
-                Expanded(
-                  flex: 2,
-                  child: GestureDetector(
-                    onTap: _isDiscovering ? null : _requestBluetoothPermissions,
-                    child: LayoutBuilder(
-                      builder: (context, constraints) {
-                        return Container(
+                ],
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      const Text(
+                        "Available Devices",
+                        style: TextStyle(fontWeight: FontWeight.bold),
+                      ),
+                      // The Bluetooth refresh icon is now here, inside the container
+                      GestureDetector(
+                        onTap:
+                            _isDiscovering
+                                ? null
+                                : _requestBluetoothPermissions,
+                        child: Container(
                           padding: const EdgeInsets.all(10),
-                          margin: const EdgeInsets.only(left: 16),
                           decoration: BoxDecoration(
                             color: _isDiscovering ? Colors.grey : Colors.blue,
                             borderRadius: BorderRadius.circular(10),
@@ -409,12 +319,62 @@ class _SettingsPageState extends State<SettingsPage> {
                                       color: Colors.white,
                                     ),
                           ),
-                        );
-                      },
-                    ),
+                        ),
+                      ),
+                    ],
                   ),
-                ),
-              ],
+                  const Divider(),
+                  SizedBox(
+                    height: 150,
+                    child:
+                        _bluetoothDevices.isEmpty && !_isDiscovering
+                            ? const Center(
+                              child: Text(
+                                "No devices found. Tap refresh to scan.",
+                              ),
+                            )
+                            : ListView.builder(
+                              physics:
+                                  const AlwaysScrollableScrollPhysics(), // Always show scroll indicator
+                              itemCount: _bluetoothDevices.length,
+                              itemBuilder: (context, index) {
+                                BluetoothDevice device =
+                                    _bluetoothDevices[index];
+                                return ListTile(
+                                  title: Text(device.name ?? "Unknown Device"),
+                                  subtitle: Text(device.address),
+                                  trailing:
+                                      device.isConnected
+                                          ? const Icon(
+                                            Icons.bluetooth_connected,
+                                            color: Colors.green,
+                                          )
+                                          : null,
+                                  selected:
+                                      _selectedBluetoothDevice?.address ==
+                                      device.address,
+                                  selectedTileColor:
+                                      Colors
+                                          .blue
+                                          .shade100, // Highlight color for selected tile
+                                  onTap: () {
+                                    setState(() {
+                                      _selectedBluetoothDevice = device;
+                                    });
+                                    ScaffoldMessenger.of(context).showSnackBar(
+                                      SnackBar(
+                                        content: Text(
+                                          'Selected: ${device.name ?? device.address}',
+                                        ),
+                                      ),
+                                    );
+                                  },
+                                );
+                              },
+                            ),
+                  ),
+                ],
+              ),
             ),
             const SizedBox(height: 10),
             ElevatedButton(
@@ -623,11 +583,11 @@ class _SettingsPageState extends State<SettingsPage> {
                 ),
               ),
             ),
-
+            // New AS7341 LED Flash Settings section
             const Padding(
               padding: EdgeInsets.only(top: 16.0, bottom: 8.0),
               child: Text(
-                "Wi-Fi Parameters (ESP32)",
+                "AS7341 LED Flash Settings",
                 style: TextStyle(fontWeight: FontWeight.bold, fontSize: 20),
               ),
             ),
@@ -650,141 +610,53 @@ class _SettingsPageState extends State<SettingsPage> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const SizedBox(height: 10),
-                  TextField(
-                    controller: _ssidController,
-                    decoration: const InputDecoration(
-                      labelText: 'SSID',
-                      border: OutlineInputBorder(),
-                      contentPadding: EdgeInsets.symmetric(
-                        horizontal: 10,
-                        vertical: 5,
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      const Text(
+                        "Flash ON/OFF",
+                        style: TextStyle(fontWeight: FontWeight.bold),
                       ),
-                    ),
-                  ),
-                  const SizedBox(height: 10),
-                  TextField(
-                    controller: _passwordController,
-                    obscureText: true,
-                    decoration: const InputDecoration(
-                      labelText: 'Password',
-                      border: OutlineInputBorder(),
-                      contentPadding: EdgeInsets.symmetric(
-                        horizontal: 10,
-                        vertical: 5,
+                      Switch(
+                        value: _isFlashOn,
+                        onChanged: (bool value) {
+                          setState(() {
+                            _isFlashOn = value;
+                          });
+                        },
                       ),
-                    ),
-                  ),
-                  const SizedBox(height: 10),
-                  ElevatedButton(
-                    onPressed: _setWifiParameters,
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: Colors.blue,
-                      foregroundColor: Colors.white,
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(10.0),
-                      ),
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 20,
-                        vertical: 12,
-                      ),
-                    ),
-                    child: const Text(
-                      "Set",
-                      style: TextStyle(
-                        color: Colors.white,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-
-            const Padding(
-              padding: EdgeInsets.only(top: 16.0, bottom: 8.0),
-              child: Text(
-                "AS7341 Sensor Parameters (ESP32)",
-                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 20),
-              ),
-            ),
-            Container(
-              margin: const EdgeInsets.only(bottom: 10),
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-              width: double.infinity,
-              decoration: BoxDecoration(
-                color: Colors.white,
-                borderRadius: BorderRadius.circular(10.0),
-                boxShadow: const [
-                  BoxShadow(
-                    color: Color.fromARGB(50, 0, 0, 0),
-                    spreadRadius: 2,
-                    blurRadius: 5,
-                    offset: Offset(0, 3),
-                  ),
-                ],
-              ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const SizedBox(height: 10),
-                  TextField(
-                    controller: _aTimeController,
-                    keyboardType: TextInputType.number,
-                    decoration: const InputDecoration(
-                      labelText: 'Set ATime',
-                      border: OutlineInputBorder(),
-                      contentPadding: EdgeInsets.symmetric(
-                        horizontal: 10,
-                        vertical: 5,
-                      ),
-                    ),
-                  ),
-                  const SizedBox(height: 10),
-                  TextField(
-                    controller: _aStepController,
-                    keyboardType: TextInputType.number,
-                    decoration: const InputDecoration(
-                      labelText: 'Set AStep',
-                      border: OutlineInputBorder(),
-                      contentPadding: EdgeInsets.symmetric(
-                        horizontal: 10,
-                        vertical: 5,
-                      ),
-                    ),
+                    ],
                   ),
                   const SizedBox(height: 10),
                   Row(
                     children: [
                       const Text(
-                        "Set Gain:",
+                        "Brightness Level",
                         style: TextStyle(fontWeight: FontWeight.bold),
                       ),
-                      const SizedBox(width: 8),
                       Expanded(
-                        child: DropdownButton<String>(
-                          value: _selectedGain,
-                          isExpanded: true,
-                          items:
-                              _gainOptions.map((String value) {
-                                return DropdownMenuItem<String>(
-                                  value: value,
-                                  child: Text(value),
-                                );
-                              }).toList(),
-                          onChanged: (String? newValue) {
+                        child: Slider(
+                          value: _brightnessLevel,
+                          min: 10,
+                          max: 100,
+                          divisions: 90,
+                          label: _brightnessLevel.round().toString(),
+                          onChanged: (double value) {
                             setState(() {
-                              _selectedGain = newValue!;
+                              _brightnessLevel = value;
                             });
                           },
-                          hint: const Text("Select Gain"),
                         ),
+                      ),
+                      Text(
+                        _brightnessLevel.round().toString(),
+                        style: const TextStyle(fontWeight: FontWeight.bold),
                       ),
                     ],
                   ),
                   const SizedBox(height: 10),
                   ElevatedButton(
-                    onPressed: _setAS7341Parameters,
+                    onPressed: _setLEDParameters,
                     style: ElevatedButton.styleFrom(
                       backgroundColor: Colors.blue,
                       foregroundColor: Colors.white,
@@ -807,7 +679,6 @@ class _SettingsPageState extends State<SettingsPage> {
                 ],
               ),
             ),
-
             const Padding(
               padding: EdgeInsets.only(top: 20.0, bottom: 10.0),
               child: Text(

@@ -1,14 +1,16 @@
 import 'package:flutter/material.dart';
-// import 'package:firebase_core/firebase_core.dart'; // REMOVED
-// import 'firebase_options.dart'; // REMOVED
+import 'package:flutter/services.dart'; // Import for SystemChrome
 import 'package:spectrumapp/pages/navigator.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  // REMOVED Firebase initialization
-  // await Firebase.initializeApp(
-  //   options: DefaultFirebaseOptions.currentPlatform,
-  // );
+
+  // Restrict the app to portrait mode
+  await SystemChrome.setPreferredOrientations([
+    DeviceOrientation.portraitUp,
+    DeviceOrientation.portraitDown,
+  ]);
+
   runApp(const MyApp());
 }
 

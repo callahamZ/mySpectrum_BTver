@@ -1,8 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:fl_chart/fl_chart.dart';
-import 'package:spectrumapp/services/connection_service.dart'; // CHANGED import
+import 'package:spectrumapp/services/connection_service.dart';
 import 'package:spectrumapp/services/graph_framework.dart';
-// import 'package:spectrumapp/services/firebase_streamer.dart'; // REMOVED
 import 'package:spectrumapp/services/database_service.dart';
 import 'package:spectrumapp/services/data_process.dart';
 import 'package:spectrumapp/services/correction_matrix.dart';
@@ -11,13 +10,13 @@ import 'dart:math';
 enum GraphView { rawData, processedData, cieData }
 
 class HomePageContent extends StatefulWidget {
-  final bool isBluetoothMode; // CHANGED
-  final VoidCallback toggleConnectionMode; // CHANGED
+  final bool isBluetoothMode;
+  final VoidCallback toggleConnectionMode;
 
-  HomePageContent({
+  const HomePageContent({
     super.key,
-    required this.isBluetoothMode, // CHANGED
-    required this.toggleConnectionMode, // CHANGED
+    required this.isBluetoothMode,
+    required this.toggleConnectionMode,
   });
 
   @override
@@ -25,6 +24,7 @@ class HomePageContent extends StatefulWidget {
 }
 
 class _HomePageContentState extends State<HomePageContent> {
+  // State variables for UI display
   List<FlSpot> _chartData = [];
   String _temperature = "N/A";
   String _lux = "N/A";
@@ -48,7 +48,11 @@ class _HomePageContentState extends State<HomePageContent> {
 
   GraphView _currentGraphView = GraphView.rawData;
 
-  final ConnectionService _connectionService = ConnectionService(); // CHANGED
+  final ConnectionService _connectionService = ConnectionService();
+
+  // Rate limiting variables to prevent UI from lagging on fast data streams
+  static const Duration _updateInterval = Duration(milliseconds: 100);
+  DateTime _lastUpdate = DateTime.now();
 
   final List<Map<String, String>> _channelCharacteristics = [
     {
@@ -106,10 +110,8 @@ class _HomePageContentState extends State<HomePageContent> {
   @override
   void initState() {
     super.initState();
-    // Initialize connection service listener
-    _connectionService.onDataReceived =
-        _updateReceivedData; // Unified data reception
-    _loadLatestLocalData(); // Load data from local DB
+    _connectionService.onDataReceived = _updateReceivedData;
+    _loadLatestLocalData();
     print(
       "HomePage: Initializing with _loadLatestLocalData and setting onDataReceived.",
     );
@@ -118,12 +120,9 @@ class _HomePageContentState extends State<HomePageContent> {
   @override
   void didUpdateWidget(covariant HomePageContent oldWidget) {
     super.didUpdateWidget(oldWidget);
-    // This logic now primarily handles clearing and reloading data
-    // when the widget itself updates, or when connection status changes.
-    // The actual connection mode switch is handled by navigator.dart.
     if (widget.isBluetoothMode != oldWidget.isBluetoothMode) {
-      _clearAllData(); // Clear data when switching modes
-      _loadLatestLocalData(); // Reload from DB based on new mode (if needed, though DB is mode-agnostic)
+      _clearAllData();
+      _loadLatestLocalData();
       print(
         "HomePage: Connection mode changed, cleared data and reloaded latest.",
       );
@@ -131,6 +130,7 @@ class _HomePageContentState extends State<HomePageContent> {
   }
 
   void _clearAllData() {
+    if (!mounted) return;
     setState(() {
       _chartData = [];
       _temperature = "N/A";
@@ -154,65 +154,90 @@ class _HomePageContentState extends State<HomePageContent> {
     });
   }
 
-  // Unified data reception method
   void _updateReceivedData(
     List<double> rawSpektrumData,
     double temperature,
     double lux,
   ) {
-    if (mounted) {
-      print(
-        "HomePage: Received data: $rawSpektrumData, Temp: $temperature, Lux: $lux",
-      );
+    if (!mounted) return;
+
+    // Perform heavy calculations outside of setState
+    double processedTemperature = DataProcessor.processTemperature(temperature);
+    double processedLux = DataProcessor.processLux(lux);
+
+    List<FlSpot> chartData =
+        rawSpektrumData.sublist(0, 8).asMap().entries.map((entry) {
+          return FlSpot(entry.key.toDouble() + 1, entry.value);
+        }).toList();
+
+    List<double> basicCounts = DataProcessor.calculateBasicCount(
+      rawSpektrumData,
+    );
+    List<double> dataSensorCorr = DataProcessor.calculateDataSensorCorr(
+      basicCounts,
+    );
+    List<double> dataSensorCorrNor = DataProcessor.calculateDataSensorCorrNor(
+      dataSensorCorr,
+    );
+
+    List<double> finalCorrectedData = DataProcessor.multiplyVectorMatrix(
+      dataSensorCorr,
+      correctionMatrix,
+    );
+
+    List<double> calculatedX = DataProcessor.calculateXYZ(
+      finalCorrectedData,
+      XN,
+    );
+    List<double> calculatedY = DataProcessor.calculateXYZ(
+      finalCorrectedData,
+      YN,
+    );
+    List<double> calculatedZ = DataProcessor.calculateXYZ(
+      finalCorrectedData,
+      ZN,
+    );
+
+    double cieX = calculatedX.fold(0.0, (sum, item) => sum + item);
+    double cieY = calculatedY.fold(0.0, (sum, item) => sum + item);
+    double cieZ = calculatedZ.fold(0.0, (sum, item) => sum + item);
+
+    String cieSmallX = "N/A";
+    String cieSmallY = "N/A";
+    String cieSmallZ = "N/A";
+    double sumXYZ = cieX + cieY + cieZ;
+    if (sumXYZ > 0) {
+      cieSmallX = (cieX / sumXYZ).toStringAsFixed(4);
+      cieSmallY = (cieY / sumXYZ).toStringAsFixed(4);
+      cieSmallZ = (cieZ / sumXYZ).toStringAsFixed(4);
+    }
+
+    String spectralLux = (cieY * 683).toStringAsFixed(2);
+
+    if (DateTime.now().difference(_lastUpdate) > _updateInterval) {
       setState(() {
-        double processedTemperature = DataProcessor.processTemperature(
-          temperature,
-        );
-        double processedLux = DataProcessor.processLux(lux);
-
-        _chartData =
-            rawSpektrumData.sublist(0, 8).asMap().entries.map((entry) {
-              return FlSpot(entry.key.toDouble() + 1, entry.value);
-            }).toList();
-
+        _chartData = chartData;
         _temperature = processedTemperature.toStringAsFixed(1);
         _lux = processedLux.toStringAsFixed(1);
+        _basicCounts = basicCounts;
+        _dataSensorCorr = dataSensorCorr;
+        _dataSensorCorrNor = dataSensorCorrNor;
+        _finalCorrectedData = finalCorrectedData;
+        _calculatedX = calculatedX;
+        _calculatedY = calculatedY;
+        _calculatedZ = calculatedZ;
+        _cieX = cieX;
+        _cieY = cieY;
+        _cieZ = cieZ;
+        _cieSmallX = cieSmallX;
+        _cieSmallY = cieSmallY;
+        _cieSmallZ = cieSmallZ;
+        _spectralLux = spectralLux;
 
-        _basicCounts = DataProcessor.calculateBasicCount(rawSpektrumData);
-        _dataSensorCorr = DataProcessor.calculateDataSensorCorr(_basicCounts);
-        _dataSensorCorrNor = DataProcessor.calculateDataSensorCorrNor(
-          _dataSensorCorr,
-        );
-
-        _finalCorrectedData = DataProcessor.multiplyVectorMatrix(
-          _dataSensorCorr,
-          correctionMatrix,
-        );
-
-        _calculatedX = DataProcessor.calculateXYZ(_finalCorrectedData, XN);
-        _calculatedY = DataProcessor.calculateXYZ(_finalCorrectedData, YN);
-        _calculatedZ = DataProcessor.calculateXYZ(_finalCorrectedData, ZN);
-
-        _cieX = _calculatedX.fold(0.0, (sum, item) => sum + item);
-        _cieY = _calculatedY.fold(0.0, (sum, item) => sum + item);
-        _cieZ = _calculatedZ.fold(0.0, (sum, item) => sum + item);
-
-        double sumXYZ = _cieX + _cieY + _cieZ;
-        if (sumXYZ > 0) {
-          _cieSmallX = (_cieX / sumXYZ).toStringAsFixed(4);
-          _cieSmallY = (_cieY / sumXYZ).toStringAsFixed(4);
-          _cieSmallZ = (_cieZ / sumXYZ).toStringAsFixed(4);
-        } else {
-          _cieSmallX = "0.0000";
-          _cieSmallY = "0.0000";
-          _cieSmallZ = "0.0000";
-        }
-        _spectralLux = (_cieY * 683).toStringAsFixed(2);
-
-        if (_cieSmallX != "N/A" && _cieSmallY != "N/A") {
+        if (cieSmallX != "N/A" && cieSmallY != "N/A") {
           try {
-            double x = double.parse(_cieSmallX);
-            double y = double.parse(_cieSmallY);
+            double x = double.parse(cieSmallX);
+            double y = double.parse(cieSmallY);
             _cieChartSpots.add(FlSpot(x, y));
             if (_cieChartSpots.length > 50) {
               _cieChartSpots.removeAt(0);
@@ -221,95 +246,40 @@ class _HomePageContentState extends State<HomePageContent> {
             print("Error parsing CIE x,y values: $e");
           }
         }
-        print("HomePage: Data processed and state updated.");
+        _lastUpdate = DateTime.now();
       });
-    } else {
-      print("HomePage: Received data but widget is not mounted.");
+      print(
+        "HomePage: Data processed and state updated. FPS is more stable now",
+      );
     }
   }
 
-  // Renamed from _loadLatestFirebaseData
   Future<void> _loadLatestLocalData() async {
     final latestMeasurement =
         await DatabaseHelper.instance.getLatestMeasurement();
     if (latestMeasurement != null) {
-      setState(() {
-        final spectrumDataString =
-            latestMeasurement[DatabaseHelper.columnSpectrumData] as String?;
-        List<double> rawSpectrumData = [];
-        if (spectrumDataString != null && spectrumDataString.isNotEmpty) {
-          rawSpectrumData =
-              spectrumDataString
-                  .split(',')
-                  .map((e) => double.parse(e))
-                  .toList();
-          _chartData =
-              rawSpectrumData.sublist(0, 8).asMap().entries.map((entry) {
-                return FlSpot(entry.key.toDouble() + 1, entry.value);
-              }).toList();
-        } else {
-          _chartData = [];
-        }
+      if (!mounted) return;
 
-        double rawTemperature =
-            (latestMeasurement[DatabaseHelper.columnTemperature] as double?) ??
-            0.0;
-        double rawLux =
-            (latestMeasurement[DatabaseHelper.columnLux] as double?) ?? 0.0;
+      final spectrumDataString =
+          latestMeasurement[DatabaseHelper.columnSpectrumData] as String?;
+      List<double> rawSpectrumData = [];
+      if (spectrumDataString != null && spectrumDataString.isNotEmpty) {
+        rawSpectrumData =
+            spectrumDataString.split(',').map((e) => double.parse(e)).toList();
+      } else {
+        rawSpectrumData = List.filled(10, 0.0);
+      }
 
-        double processedTemperature = DataProcessor.processTemperature(
-          rawTemperature,
-        );
-        double processedLux = DataProcessor.processLux(rawLux);
+      double rawTemperature =
+          (latestMeasurement[DatabaseHelper.columnTemperature] as double?) ??
+          0.0;
+      double rawLux =
+          (latestMeasurement[DatabaseHelper.columnLux] as double?) ?? 0.0;
 
-        _temperature = processedTemperature.toStringAsFixed(1);
-        _lux = processedLux.toStringAsFixed(1);
+      // Call the data processing logic
+      _updateReceivedData(rawSpectrumData, rawTemperature, rawLux);
 
-        _basicCounts = DataProcessor.calculateBasicCount(rawSpectrumData);
-        _dataSensorCorr = DataProcessor.calculateDataSensorCorr(_basicCounts);
-        _dataSensorCorrNor = DataProcessor.calculateDataSensorCorrNor(
-          _dataSensorCorr,
-        );
-
-        _finalCorrectedData = DataProcessor.multiplyVectorMatrix(
-          _dataSensorCorr,
-          correctionMatrix,
-        );
-
-        _calculatedX = DataProcessor.calculateXYZ(_finalCorrectedData, XN);
-        _calculatedY = DataProcessor.calculateXYZ(_finalCorrectedData, YN);
-        _calculatedZ = DataProcessor.calculateXYZ(_finalCorrectedData, ZN);
-
-        _cieX = _calculatedX.fold(0.0, (sum, item) => sum + item);
-        _cieY = _calculatedY.fold(0.0, (sum, item) => sum + item);
-        _cieZ = _calculatedZ.fold(0.0, (sum, item) => sum + item);
-
-        double sumXYZ = _cieX + _cieY + _cieZ;
-        if (sumXYZ > 0) {
-          _cieSmallX = (_cieX / sumXYZ).toStringAsFixed(4);
-          _cieSmallY = (_cieY / sumXYZ).toStringAsFixed(4);
-          _cieSmallZ = (_cieZ / sumXYZ).toStringAsFixed(4);
-        } else {
-          _cieSmallX = "0.0000";
-          _cieSmallY = "0.0000";
-          _cieSmallZ = "0.0000";
-        }
-        _spectralLux = (_cieY * 683).toStringAsFixed(2);
-
-        if (_cieSmallX != "N/A" && _cieSmallY != "N/A") {
-          try {
-            double x = double.parse(_cieSmallX);
-            double y = double.parse(_cieSmallY);
-            _cieChartSpots.add(FlSpot(x, y));
-            if (_cieChartSpots.length > 50) {
-              _cieChartSpots.removeAt(0);
-            }
-          } catch (e) {
-            print("Error parsing CIE x,y values: $e");
-          }
-        }
-        print("HomePage: Local data loaded and state updated.");
-      });
+      print("HomePage: Local data loaded and state updated.");
     } else {
       _clearAllData();
       print("HomePage: No latest local measurement found, clearing data.");
@@ -318,7 +288,6 @@ class _HomePageContentState extends State<HomePageContent> {
 
   @override
   void dispose() {
-    // It's generally good practice to clear the listener when disposing
     _connectionService.onDataReceived = null;
     print("HomePage: onDataReceived listener cleared in dispose.");
     super.dispose();
@@ -557,14 +526,12 @@ class _HomePageContentState extends State<HomePageContent> {
     return SingleChildScrollView(
       child: Column(
         children: [
-          // Removed FirebaseStreamer widget
           GestureDetector(
-            onTap: widget.toggleConnectionMode, // CHANGED
+            onTap: widget.toggleConnectionMode,
             child: Container(
               margin: const EdgeInsets.only(left: 16, right: 16, top: 16),
               padding: const EdgeInsets.all(8.0),
               decoration: BoxDecoration(
-                // Update colors based on isBluetoothMode
                 color: widget.isBluetoothMode ? Colors.blue : Colors.green,
                 borderRadius: BorderRadius.circular(10.0),
                 boxShadow: const [
@@ -580,14 +547,12 @@ class _HomePageContentState extends State<HomePageContent> {
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
                   Icon(
-                    // Update icons based on isBluetoothMode
                     widget.isBluetoothMode ? Icons.bluetooth : Icons.cable,
                     color: Colors.white,
                     size: 24.0,
                   ),
                   const SizedBox(width: 8.0),
                   Text(
-                    // Update text based on isBluetoothMode
                     widget.isBluetoothMode
                         ? "Bluetooth Mode"
                         : "Cable Serial Mode",
@@ -752,7 +717,6 @@ class _HomePageContentState extends State<HomePageContent> {
               ),
             ),
           ),
-
           Container(
             margin: const EdgeInsets.only(left: 16.0, right: 16.0, top: 16.0),
             padding: const EdgeInsets.all(8.0),
@@ -771,30 +735,27 @@ class _HomePageContentState extends State<HomePageContent> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Row(
+                const Row(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
+                    Text("---", style: TextStyle(fontWeight: FontWeight.bold)),
                     Text(
-                      "---",
-                      style: const TextStyle(fontWeight: FontWeight.bold),
-                    ),
-                    const Text(
                       " Raw Measured Data",
                       style: TextStyle(color: Color.fromARGB(255, 85, 85, 85)),
                     ),
                   ],
                 ),
-                Row(
+                const Row(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
                       "---",
-                      style: const TextStyle(
+                      style: TextStyle(
                         fontWeight: FontWeight.bold,
                         color: Colors.red,
                       ),
                     ),
-                    const Text(
+                    Text(
                       " Calibrated Data",
                       style: TextStyle(color: Color.fromARGB(255, 85, 85, 85)),
                     ),
@@ -803,7 +764,6 @@ class _HomePageContentState extends State<HomePageContent> {
               ],
             ),
           ),
-
           GestureDetector(
             onTap: () => _showAboutDialog(context),
             child: Container(
@@ -842,7 +802,6 @@ class _HomePageContentState extends State<HomePageContent> {
               ),
             ),
           ),
-
           Row(
             children: [
               Expanded(
@@ -929,7 +888,6 @@ class _HomePageContentState extends State<HomePageContent> {
               ),
             ],
           ),
-
           Container(
             margin: const EdgeInsets.only(
               left: 16.0,
@@ -1075,7 +1033,6 @@ class _HomePageContentState extends State<HomePageContent> {
               ],
             ),
           ),
-
           const Padding(
             padding: EdgeInsets.only(top: 16.0, bottom: 8.0),
             child: Text(
@@ -1083,7 +1040,6 @@ class _HomePageContentState extends State<HomePageContent> {
               style: TextStyle(fontWeight: FontWeight.bold, fontSize: 22),
             ),
           ),
-
           Container(
             margin: const EdgeInsets.only(left: 16.0, right: 16.0, top: 8.0),
             padding: const EdgeInsets.all(16.0),
@@ -1249,58 +1205,71 @@ class _HomePageContentState extends State<HomePageContent> {
                 const SizedBox(height: 8.0),
                 SizedBox(
                   height: 200,
-                  child: SingleChildScrollView(
-                    child: Table(
-                      columnWidths: const {
-                        0: FlexColumnWidth(2),
-                        1: FlexColumnWidth(3),
-                      },
-                      border: TableBorder.all(color: Colors.grey.shade300),
-                      children: [
-                        TableRow(
-                          decoration: BoxDecoration(
-                            color: Colors.grey.shade200,
-                          ),
-                          children: const [
-                            TableCell(
-                              verticalAlignment:
-                                  TableCellVerticalAlignment.middle,
-                              child: Padding(
-                                padding: EdgeInsets.all(8.0),
-                                child: Text(
-                                  "Wavelength",
-                                  style: TextStyle(
-                                    fontWeight: FontWeight.bold,
-                                    fontSize: 12,
-                                  ),
-                                  textAlign: TextAlign.center,
-                                ),
+                  child: ListView.builder(
+                    itemCount: _finalCorrectedData.length + 1,
+                    itemBuilder: (context, index) {
+                      if (index == 0) {
+                        return Table(
+                          columnWidths: const {
+                            0: FlexColumnWidth(2),
+                            1: FlexColumnWidth(3),
+                          },
+                          border: TableBorder.all(color: Colors.grey.shade300),
+                          children: [
+                            TableRow(
+                              decoration: BoxDecoration(
+                                color: Colors.grey.shade200,
                               ),
-                            ),
-                            TableCell(
-                              verticalAlignment:
-                                  TableCellVerticalAlignment.middle,
-                              child: Padding(
-                                padding: EdgeInsets.all(8.0),
-                                child: Text(
-                                  "Sensor Reconstruction",
-                                  style: TextStyle(
-                                    fontWeight: FontWeight.bold,
-                                    fontSize: 12,
+                              children: const [
+                                TableCell(
+                                  verticalAlignment:
+                                      TableCellVerticalAlignment.middle,
+                                  child: Padding(
+                                    padding: EdgeInsets.all(8.0),
+                                    child: Text(
+                                      "Wavelength",
+                                      style: TextStyle(
+                                        fontWeight: FontWeight.bold,
+                                        fontSize: 12,
+                                      ),
+                                      textAlign: TextAlign.center,
+                                    ),
                                   ),
-                                  textAlign: TextAlign.center,
                                 ),
-                              ),
+                                TableCell(
+                                  verticalAlignment:
+                                      TableCellVerticalAlignment.middle,
+                                  child: Padding(
+                                    padding: EdgeInsets.all(8.0),
+                                    child: Text(
+                                      "Sensor Reconstruction",
+                                      style: TextStyle(
+                                        fontWeight: FontWeight.bold,
+                                        fontSize: 12,
+                                      ),
+                                      textAlign: TextAlign.center,
+                                    ),
+                                  ),
+                                ),
+                              ],
                             ),
                           ],
-                        ),
-                        for (int i = 0; i < _finalCorrectedData.length; i++)
+                        );
+                      }
+                      int dataIndex = index - 1;
+                      return Table(
+                        columnWidths: const {
+                          0: FlexColumnWidth(2),
+                          1: FlexColumnWidth(3),
+                        },
+                        border: TableBorder.all(color: Colors.grey.shade300),
+                        children: [
                           TableRow(
                             children: [
                               Padding(
                                 padding: const EdgeInsets.all(8.0),
                                 child: Text(
-                                  (i + 380).toString(),
+                                  (dataIndex + 380).toString(),
                                   style: const TextStyle(fontSize: 12),
                                   textAlign: TextAlign.center,
                                 ),
@@ -1308,15 +1277,17 @@ class _HomePageContentState extends State<HomePageContent> {
                               Padding(
                                 padding: const EdgeInsets.all(8.0),
                                 child: Text(
-                                  _finalCorrectedData[i].toStringAsFixed(5),
+                                  _finalCorrectedData[dataIndex]
+                                      .toStringAsFixed(5),
                                   style: const TextStyle(fontSize: 12),
                                   textAlign: TextAlign.right,
                                 ),
                               ),
                             ],
                           ),
-                      ],
-                    ),
+                        ],
+                      );
+                    },
                   ),
                 ),
               ],
@@ -1352,90 +1323,105 @@ class _HomePageContentState extends State<HomePageContent> {
                 const SizedBox(height: 8.0),
                 SizedBox(
                   height: 200,
-                  child: SingleChildScrollView(
-                    child: Table(
-                      columnWidths: const {
-                        0: FlexColumnWidth(2),
-                        1: FlexColumnWidth(2),
-                        2: FlexColumnWidth(2),
-                        3: FlexColumnWidth(2),
-                      },
-                      border: TableBorder.all(color: Colors.grey.shade300),
-                      children: [
-                        TableRow(
-                          decoration: BoxDecoration(
-                            color: Colors.grey.shade200,
-                          ),
-                          children: const [
-                            TableCell(
-                              verticalAlignment:
-                                  TableCellVerticalAlignment.middle,
-                              child: Padding(
-                                padding: EdgeInsets.all(8.0),
-                                child: Text(
-                                  "Wavelength",
-                                  style: TextStyle(
-                                    fontWeight: FontWeight.bold,
-                                    fontSize: 12,
-                                  ),
-                                  textAlign: TextAlign.center,
-                                ),
+                  child: ListView.builder(
+                    itemCount: _calculatedX.length + 1,
+                    itemBuilder: (context, index) {
+                      if (index == 0) {
+                        return Table(
+                          columnWidths: const {
+                            0: FlexColumnWidth(2),
+                            1: FlexColumnWidth(2),
+                            2: FlexColumnWidth(2),
+                            3: FlexColumnWidth(2),
+                          },
+                          border: TableBorder.all(color: Colors.grey.shade300),
+                          children: [
+                            TableRow(
+                              decoration: BoxDecoration(
+                                color: Colors.grey.shade200,
                               ),
-                            ),
-                            TableCell(
-                              verticalAlignment:
-                                  TableCellVerticalAlignment.middle,
-                              child: Padding(
-                                padding: EdgeInsets.all(8.0),
-                                child: Text(
-                                  "X",
-                                  style: TextStyle(
-                                    fontWeight: FontWeight.bold,
-                                    fontSize: 12,
+                              children: const [
+                                TableCell(
+                                  verticalAlignment:
+                                      TableCellVerticalAlignment.middle,
+                                  child: Padding(
+                                    padding: EdgeInsets.all(8.0),
+                                    child: Text(
+                                      "Wavelength",
+                                      style: TextStyle(
+                                        fontWeight: FontWeight.bold,
+                                        fontSize: 12,
+                                      ),
+                                      textAlign: TextAlign.center,
+                                    ),
                                   ),
-                                  textAlign: TextAlign.center,
                                 ),
-                              ),
-                            ),
-                            TableCell(
-                              verticalAlignment:
-                                  TableCellVerticalAlignment.middle,
-                              child: Padding(
-                                padding: EdgeInsets.all(8.0),
-                                child: Text(
-                                  "Y",
-                                  style: TextStyle(
-                                    fontWeight: FontWeight.bold,
-                                    fontSize: 12,
+                                TableCell(
+                                  verticalAlignment:
+                                      TableCellVerticalAlignment.middle,
+                                  child: Padding(
+                                    padding: EdgeInsets.all(8.0),
+                                    child: Text(
+                                      "X",
+                                      style: TextStyle(
+                                        fontWeight: FontWeight.bold,
+                                        fontSize: 12,
+                                      ),
+                                      textAlign: TextAlign.center,
+                                    ),
                                   ),
-                                  textAlign: TextAlign.center,
                                 ),
-                              ),
-                            ),
-                            TableCell(
-                              verticalAlignment:
-                                  TableCellVerticalAlignment.middle,
-                              child: Padding(
-                                padding: const EdgeInsets.all(8.0),
-                                child: Text(
-                                  "Z",
-                                  style: TextStyle(
-                                    fontWeight: FontWeight.bold,
-                                    fontSize: 12,
+                                TableCell(
+                                  verticalAlignment:
+                                      TableCellVerticalAlignment.middle,
+                                  child: Padding(
+                                    padding: EdgeInsets.all(8.0),
+                                    child: Text(
+                                      "Y",
+                                      style: TextStyle(
+                                        fontWeight: FontWeight.bold,
+                                        fontSize: 12,
+                                      ),
+                                      textAlign: TextAlign.center,
+                                    ),
                                   ),
-                                  textAlign: TextAlign.center,
                                 ),
-                              ),
+                                TableCell(
+                                  verticalAlignment:
+                                      TableCellVerticalAlignment.middle,
+                                  child: Padding(
+                                    padding: const EdgeInsets.all(8.0),
+                                    child: Text(
+                                      "Z",
+                                      style: TextStyle(
+                                        fontWeight: FontWeight.bold,
+                                        fontSize: 12,
+                                      ),
+                                      textAlign: TextAlign.center,
+                                    ),
+                                  ),
+                                ),
+                              ],
                             ),
                           ],
-                        ),
-                        for (int i = 0; i < _calculatedX.length; i++)
+                        );
+                      }
+                      int dataIndex = index - 1;
+                      return Table(
+                        columnWidths: const {
+                          0: FlexColumnWidth(2),
+                          1: FlexColumnWidth(2),
+                          2: FlexColumnWidth(2),
+                          3: FlexColumnWidth(2),
+                        },
+                        border: TableBorder.all(color: Colors.grey.shade300),
+                        children: [
                           TableRow(
                             children: [
                               Padding(
                                 padding: const EdgeInsets.all(8.0),
                                 child: Text(
-                                  (i + 380).toString(),
+                                  (dataIndex + 380).toString(),
                                   style: const TextStyle(fontSize: 12),
                                   textAlign: TextAlign.center,
                                 ),
@@ -1443,7 +1429,7 @@ class _HomePageContentState extends State<HomePageContent> {
                               Padding(
                                 padding: const EdgeInsets.all(8.0),
                                 child: Text(
-                                  _calculatedX[i].toStringAsFixed(5),
+                                  _calculatedX[dataIndex].toStringAsFixed(5),
                                   style: const TextStyle(fontSize: 12),
                                   textAlign: TextAlign.right,
                                 ),
@@ -1451,7 +1437,7 @@ class _HomePageContentState extends State<HomePageContent> {
                               Padding(
                                 padding: const EdgeInsets.all(8.0),
                                 child: Text(
-                                  _calculatedY[i].toStringAsFixed(5),
+                                  _calculatedY[dataIndex].toStringAsFixed(5),
                                   style: const TextStyle(fontSize: 12),
                                   textAlign: TextAlign.right,
                                 ),
@@ -1459,15 +1445,16 @@ class _HomePageContentState extends State<HomePageContent> {
                               Padding(
                                 padding: const EdgeInsets.all(8.0),
                                 child: Text(
-                                  _calculatedZ[i].toStringAsFixed(5),
+                                  _calculatedZ[dataIndex].toStringAsFixed(5),
                                   style: const TextStyle(fontSize: 12),
                                   textAlign: TextAlign.right,
                                 ),
                               ),
                             ],
                           ),
-                      ],
-                    ),
+                        ],
+                      );
+                    },
                   ),
                 ),
               ],

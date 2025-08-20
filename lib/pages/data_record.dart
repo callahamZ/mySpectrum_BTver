@@ -1,10 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:spectrumapp/services/database_service.dart';
 import 'package:intl/intl.dart';
-import 'package:path_provider/path_provider.dart'; // This import provides getDownloadsDirectory
+import 'package:path_provider/path_provider.dart';
 import 'dart:io';
 import 'package:csv/csv.dart';
-import 'package:permission_handler/permission_handler.dart'; // Ensure this exact import for Permission class
+import 'package:share_plus/share_plus.dart';
 
 class DataRecordPage extends StatefulWidget {
   const DataRecordPage({super.key});
@@ -43,7 +43,6 @@ class _DataRecordPageState extends State<DataRecordPage> {
   }
 
   Future<void> _deleteAllMeasurements() async {
-    // Show a confirmation dialog
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (BuildContext context) {
@@ -77,41 +76,15 @@ class _DataRecordPageState extends State<DataRecordPage> {
 
   Future<void> _exportDataToCsv() async {
     if (_measurements.isEmpty) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('No data to export.')));
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('No data to export.')));
+      }
       return;
     }
 
-    // Request storage permission before exporting
-    // For Android 10+ (API 29+), Permission.storage often maps to MediaStore access
-    // when using getDownloadsDirectory, and might not show a direct "storage" prompt
-    // but rather rely on implicit access or a different prompt type if needed.
-    var status = await Permission.storage.request();
-    if (status.isDenied) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Storage permission denied. Cannot export data.'),
-        ),
-      );
-      return;
-    }
-    if (status.isPermanentlyDenied) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text(
-            'Storage permission permanently denied. Please enable it in app settings.',
-          ),
-        ),
-      );
-      await openAppSettings(); // Opens app settings for the user to manually grant
-      return;
-    }
-
-    // Prepare CSV data
     List<List<dynamic>> csvData = [];
-
-    // Add header row
     csvData.add([
       'ID',
       'Timestamp',
@@ -129,7 +102,6 @@ class _DataRecordPageState extends State<DataRecordPage> {
       'NIR',
     ]);
 
-    // Add data rows
     for (var measurement in _measurements) {
       final timestamp = DateTime.parse(
         measurement[DatabaseHelper.columnTimestamp],
@@ -145,7 +117,6 @@ class _DataRecordPageState extends State<DataRecordPage> {
             spectrumDataString.split(',').map((e) => double.parse(e)).toList();
       }
 
-      // Ensure spectrumData has 10 elements, pad with 0.0 if less
       while (spectrumData.length < 10) {
         spectrumData.add(0.0);
       }
@@ -156,127 +127,149 @@ class _DataRecordPageState extends State<DataRecordPage> {
         measurement[DatabaseHelper.columnTemperature]?.toStringAsFixed(1) ??
             'N/A',
         measurement[DatabaseHelper.columnLux]?.toStringAsFixed(1) ?? 'N/A',
-        // Add all 10 spectrum data channels
         ...spectrumData.map((e) => e.toStringAsFixed(2)).toList(),
       ]);
     }
 
-    // Convert list of lists to CSV string
     String csv = const ListToCsvConverter().convert(csvData);
 
     try {
-      // Get the Downloads directory (user-accessible public directory)
-      final Directory? directory =
-          await getDownloadsDirectory(); // Corrected function call
-
-      if (directory == null) {
-        throw Exception(
-          "Could not get Downloads directory. It might not be supported on this platform or device.",
-        );
-      }
-
+      final Directory tempDir = await getTemporaryDirectory();
       final String fileName =
           'spectrum_data_${DateFormat('yyyyMMdd_HHmmss').format(DateTime.now())}.csv';
-      final File file = File('${directory.path}/$fileName');
+      final File file = File('${tempDir.path}/$fileName');
 
-      // Ensure the directory exists (e.g., if 'Download' folder was somehow deleted)
-      if (!await directory.exists()) {
-        await directory.create(recursive: true);
-      }
-
-      // Write the CSV content to the file
       await file.writeAsString(csv);
 
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('Data exported to ${file.path}')));
-      print('CSV exported to: ${file.path}');
+      await Share.shareXFiles([
+        XFile(file.path),
+      ], text: 'Exported Spectrum Data');
+
+      print('Share menu opened for file: ${file.path}');
     } catch (e) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('Error exporting data: $e')));
-      print('Error exporting data: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Error sharing data: $e')));
+      }
+      print('Error sharing data: $e');
     }
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      body:
-          _isLoading
-              ? const Center(child: CircularProgressIndicator())
-              : _measurements.isEmpty
-              ? const Center(child: Text('No data recorded yet.'))
-              : ListView.builder(
-                itemCount: _measurements.length,
-                itemBuilder: (context, index) {
-                  final measurement = _measurements[index];
-                  final timestamp = DateTime.parse(
-                    measurement[DatabaseHelper.columnTimestamp],
-                  );
-                  final spectrumData =
-                      measurement[DatabaseHelper.columnSpectrumData]
-                          ?.split(',')
-                          .map((e) => double.parse(e))
-                          .toList() ??
-                      [];
-                  final temperature =
-                      measurement[DatabaseHelper.columnTemperature];
-                  final lux = measurement[DatabaseHelper.columnLux];
+      body: Column(
+        children: [
+          Padding(
+            padding: const EdgeInsets.all(16.0),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+              children: [
+                Expanded(
+                  child: ElevatedButton.icon(
+                    onPressed: _exportDataToCsv,
+                    icon: const Icon(Icons.download),
+                    label: const Text('Export Data'),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.blue,
+                      foregroundColor: Colors.white,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(10.0),
+                      ),
+                      padding: const EdgeInsets.symmetric(vertical: 12.0),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 16),
+                Expanded(
+                  child: ElevatedButton.icon(
+                    onPressed: _deleteAllMeasurements,
+                    icon: const Icon(Icons.delete_forever),
+                    label: const Text('Delete All'),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.red,
+                      foregroundColor: Colors.white,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(10.0),
+                      ),
+                      padding: const EdgeInsets.symmetric(vertical: 12.0),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          Expanded(
+            child:
+                _isLoading
+                    ? const Center(child: CircularProgressIndicator())
+                    : _measurements.isEmpty
+                    ? const Center(child: Text('No data recorded yet.'))
+                    : ListView.builder(
+                      itemCount: _measurements.length,
+                      itemBuilder: (context, index) {
+                        final measurement = _measurements[index];
+                        final timestamp = DateTime.parse(
+                          measurement[DatabaseHelper.columnTimestamp],
+                        );
+                        final spectrumData =
+                            measurement[DatabaseHelper.columnSpectrumData]
+                                ?.split(',')
+                                .map((e) => double.parse(e))
+                                .toList() ??
+                            [];
+                        final temperature =
+                            measurement[DatabaseHelper.columnTemperature];
+                        final lux = measurement[DatabaseHelper.columnLux];
 
-                  return Card(
-                    margin: const EdgeInsets.all(8.0),
-                    child: Padding(
-                      padding: const EdgeInsets.all(16.0),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            'Timestamp: ${DateFormat('yyyy-MM-dd HH:mm:ss').format(timestamp)}',
-                            style: const TextStyle(fontWeight: FontWeight.bold),
+                        return Card(
+                          margin: const EdgeInsets.symmetric(
+                            horizontal: 16.0,
+                            vertical: 8.0,
                           ),
-                          Text(
-                            'Temperature: ${temperature?.toStringAsFixed(1) ?? 'N/A'} °C',
-                          ),
-                          Text('Lux: ${lux?.toStringAsFixed(1) ?? 'N/A'} Lux'),
-                          Text(
-                            'Spectrum Data (F1-F8, Clear, NIR): ${spectrumData.map((e) => e.toStringAsFixed(2)).join(', ')}',
-                          ),
-                          Align(
-                            alignment: Alignment.bottomRight,
-                            child: IconButton(
-                              icon: const Icon(Icons.delete, color: Colors.red),
-                              onPressed:
-                                  () => _deleteMeasurement(
-                                    measurement[DatabaseHelper.columnId],
+                          child: Padding(
+                            padding: const EdgeInsets.all(16.0),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  'Timestamp: ${DateFormat('yyyy-MM-dd HH:mm:ss').format(timestamp)}',
+                                  style: const TextStyle(
+                                    fontWeight: FontWeight.bold,
                                   ),
+                                ),
+                                Text(
+                                  'Temperature: ${temperature?.toStringAsFixed(1) ?? 'N/A'} °C',
+                                ),
+                                Text(
+                                  'Lux: ${lux?.toStringAsFixed(1) ?? 'N/A'} Lux',
+                                ),
+                                Text(
+                                  'Spectrum Data (F1-F8, Clear, NIR): ${spectrumData.map((e) => e.toStringAsFixed(2)).join(', ')}',
+                                ),
+                                Align(
+                                  alignment: Alignment.bottomRight,
+                                  child: IconButton(
+                                    icon: const Icon(
+                                      Icons.delete,
+                                      color: Colors.red,
+                                    ),
+                                    onPressed:
+                                        () => _deleteMeasurement(
+                                          measurement[DatabaseHelper.columnId],
+                                        ),
+                                  ),
+                                ),
+                              ],
                             ),
                           ),
-                        ],
-                      ),
+                        );
+                      },
                     ),
-                  );
-                },
-              ),
-      floatingActionButton: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          FloatingActionButton.extended(
-            onPressed: _exportDataToCsv,
-            label: const Text('Export Data'),
-            icon: const Icon(Icons.download),
-            backgroundColor: Colors.blue,
-          ),
-          const SizedBox(height: 10),
-          FloatingActionButton.extended(
-            onPressed: _deleteAllMeasurements,
-            label: const Text('Delete All Data'),
-            icon: const Icon(Icons.delete_forever),
-            backgroundColor: Colors.red,
           ),
         ],
       ),
-      floatingActionButtonLocation: FloatingActionButtonLocation.centerFloat,
     );
   }
 }

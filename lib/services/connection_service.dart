@@ -1,11 +1,10 @@
 import 'package:usb_serial/usb_serial.dart';
-import 'package:flutter_bluetooth_serial/flutter_bluetooth_serial.dart'; // New import for Bluetooth
+import 'package:flutter_bluetooth_serial/flutter_bluetooth_serial.dart';
 import 'dart:typed_data';
 import 'package:usb_serial/transaction.dart';
 import 'database_service.dart';
 import 'dart:async';
 
-// Define an enum for connection types
 enum ConnectionType { usb, bluetooth, none }
 
 class ConnectionService {
@@ -15,18 +14,27 @@ class ConnectionService {
     return _instance;
   }
 
-  ConnectionService._internal();
+  ConnectionService._internal() {
+    // Corrected USB detachment event constant
+    UsbSerial.usbEventStream!.listen((UsbEvent event) {
+      if (event.event == UsbEvent.ACTION_USB_DETACHED) {
+        print("USB device detached. Disconnecting...");
+        disconnect();
+      }
+    });
+  }
 
   UsbPort? _usbSerialPort;
-  BluetoothConnection? _bluetoothConnection; // Bluetooth connection object
+  BluetoothConnection? _bluetoothConnection;
   StreamSubscription<String>? _usbSubscription;
-  StreamSubscription<Uint8List>? _bluetoothSubscription; // Bluetooth stream
+  StreamSubscription<Uint8List>? _bluetoothSubscription;
   Transaction<String>? _usbTransaction;
 
   Function(List<double>, double, double)? onDataReceived;
   Function(String)? onRawDataReceived;
-  ConnectionType _currentConnectionType =
-      ConnectionType.none; // Track current connection type
+  Function(ConnectionType)? onConnectionStatusChanged;
+
+  ConnectionType _currentConnectionType = ConnectionType.none;
 
   bool get isConnected {
     return _currentConnectionType != ConnectionType.none;
@@ -34,7 +42,6 @@ class ConnectionService {
 
   ConnectionType get currentConnectionType => _currentConnectionType;
 
-  // Connect to USB Serial
   Future<void> connectToUsbSerial(String baudRate) async {
     List<UsbDevice> devices = await UsbSerial.listDevices();
     if (devices.isEmpty) {
@@ -60,16 +67,19 @@ class ConnectionService {
       );
 
       _currentConnectionType = ConnectionType.usb;
+      if (onConnectionStatusChanged != null) {
+        onConnectionStatusChanged!(_currentConnectionType);
+      }
 
       _usbTransaction = Transaction.stringTerminated(
         _usbSerialPort!.inputStream as Stream<Uint8List>,
-        Uint8List.fromList([13, 10]), // Assuming \r\n termination
+        Uint8List.fromList([13, 10]),
       );
 
       _usbSubscription = _usbTransaction!.stream.listen(
         (String line) {
           if (onRawDataReceived != null) {
-            onRawDataReceived!(line); // Send raw line to SettingsPage
+            onRawDataReceived!(line);
           }
           _processSerialData(line);
         },
@@ -88,7 +98,6 @@ class ConnectionService {
     }
   }
 
-  // Connect to Bluetooth Device
   Future<void> connectToBluetooth(BluetoothDevice device) async {
     try {
       _bluetoothConnection = await BluetoothConnection.toAddress(
@@ -96,13 +105,15 @@ class ConnectionService {
       );
       print('Connected to the Bluetooth device');
       _currentConnectionType = ConnectionType.bluetooth;
+      if (onConnectionStatusChanged != null) {
+        onConnectionStatusChanged!(_currentConnectionType);
+      }
 
       _bluetoothSubscription = _bluetoothConnection!.input!.listen(
         (Uint8List data) {
-          String line =
-              String.fromCharCodes(data).trim(); // Assuming data is text
+          String line = String.fromCharCodes(data).trim();
           if (onRawDataReceived != null) {
-            onRawDataReceived!(line); // Send raw line to SettingsPage
+            onRawDataReceived!(line);
           }
           _processSerialData(line);
         },
@@ -125,22 +136,17 @@ class ConnectionService {
   void _processSerialData(String rawData) {
     if (rawData.startsWith('@DataCap')) {
       List<String> values = rawData.substring('@DataCap,'.length).split(',');
-      // Now expecting 12 values: F1-F8, Clear, NIR, Lux, Temperature
       if (values.length == 12) {
         try {
           List<double> spektrumData = [];
-          // Parse F1-F8
           for (int i = 0; i < 8; i++) {
             spektrumData.add(double.parse(values[i]));
           }
-          // Parse Clear and NIR
-          spektrumData.add(double.parse(values[8])); // Clear
-          spektrumData.add(double.parse(values[9])); // NIR
+          spektrumData.add(double.parse(values[8]));
+          spektrumData.add(double.parse(values[9]));
 
-          double lux = double.parse(values[10]); // Lux is now at index 10
-          double temperature = double.parse(
-            values[11],
-          ); // Temperature is now at index 11
+          double lux = double.parse(values[10]);
+          double temperature = double.parse(values[11]);
 
           DatabaseHelper.instance.insertMeasurement(
             timestamp: DateTime.now(),
@@ -150,7 +156,6 @@ class ConnectionService {
           );
 
           if (onDataReceived != null) {
-            // onDataReceived expects List<double> for spektrumData, double for temperature, double for lux
             onDataReceived!(spektrumData, temperature, lux);
           }
         } catch (e) {
@@ -166,7 +171,6 @@ class ConnectionService {
     }
   }
 
-  // Disconnect from current connection (USB or Bluetooth)
   Future<void> disconnect() async {
     if (_usbSubscription != null) {
       await _usbSubscription!.cancel();
@@ -190,11 +194,15 @@ class ConnectionService {
       _bluetoothConnection = null;
     }
 
-    _currentConnectionType = ConnectionType.none;
-    print("Disconnected from current connection.");
+    if (_currentConnectionType != ConnectionType.none) {
+      _currentConnectionType = ConnectionType.none;
+      if (onConnectionStatusChanged != null) {
+        onConnectionStatusChanged!(_currentConnectionType);
+      }
+      print("Disconnected from current connection.");
+    }
   }
 
-  // Method to send data over the active connection
   Future<void> sendData(String data) async {
     if (_currentConnectionType == ConnectionType.usb &&
         _usbSerialPort != null) {

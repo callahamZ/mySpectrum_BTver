@@ -35,44 +35,65 @@ class _SettingsPageState extends State<SettingsPage> {
     super.initState();
     _refreshUsbPortList();
     _connectionService.onRawDataReceived = (String rawData) {
-      setState(() {
-        _rawDataBuffer.add(rawData);
-        if (_rawDataBuffer.length > _maxBufferLines) {
-          _rawDataBuffer.removeAt(0);
-        }
-      });
+      if (mounted) {
+        setState(() {
+          _rawDataBuffer.add(rawData);
+          if (_rawDataBuffer.length > _maxBufferLines) {
+            _rawDataBuffer.removeAt(0);
+          }
+        });
+      }
+    };
+    _connectionService.onConnectionStatusChanged = (ConnectionType status) {
+      if (mounted) {
+        setState(() {
+          print("SettingsPage: Connection status changed to $status");
+          if (status == ConnectionType.none) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(content: Text('USB is disconnected.')),
+            );
+          }
+        });
+      }
     };
   }
 
   @override
   void dispose() {
     _connectionService.onRawDataReceived = null;
+    _connectionService.onConnectionStatusChanged = null;
     super.dispose();
   }
 
   // USB Serial Methods
   Future<void> _refreshUsbPortList() async {
-    setState(() {
-      _usbPortListFuture = Future.delayed(
-        const Duration(milliseconds: 500),
-        () => UsbSerial.listDevices(),
-      );
-    });
+    if (mounted) {
+      setState(() {
+        _usbPortListFuture = Future.delayed(
+          const Duration(milliseconds: 500),
+          () => UsbSerial.listDevices(),
+        );
+      });
+    }
   }
 
   Future<void> _connectToUsbSerial() async {
     try {
       await _connectionService.connectToUsbSerial(_selectedBaudRate!);
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Cable Serial port connected.')),
-      );
-      setState(() {
-        _rawDataBuffer.clear();
-      });
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Cable Serial port connected.')),
+        );
+        setState(() {
+          _rawDataBuffer.clear();
+        });
+      }
     } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Error connecting to Cable Serial: $e')),
-      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error connecting to Cable Serial: $e')),
+        );
+      }
     }
   }
 
@@ -92,115 +113,133 @@ class _SettingsPageState extends State<SettingsPage> {
       _startDiscovery();
     } else {
       print("Bluetooth or Location permissions denied.");
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text(
-            'Bluetooth and Location permissions are required to scan for devices.',
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              'Bluetooth and Location permissions are required to scan for devices.',
+            ),
           ),
-        ),
-      );
+        );
+      }
     }
   }
 
   void _startDiscovery() async {
-    setState(() {
-      _isDiscovering = true;
-      _bluetoothDevices = []; // Clear previous list
-      _selectedBluetoothDevice = null; // Clear selected device on new discovery
-    });
+    if (mounted) {
+      setState(() {
+        _isDiscovering = true;
+        _bluetoothDevices = [];
+        _selectedBluetoothDevice = null;
+      });
+    }
 
     bool? isEnabled = await FlutterBluetoothSerial.instance.isOn;
     if (isEnabled == null || !isEnabled) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Please enable Bluetooth on your device.'),
-        ),
-      );
-      setState(() {
-        _isDiscovering = false;
-      });
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Please enable Bluetooth on your device.'),
+          ),
+        );
+        setState(() {
+          _isDiscovering = false;
+        });
+      }
       return;
     }
 
     FlutterBluetoothSerial.instance
         .startDiscovery()
         .listen((r) {
-          setState(() {
-            final existingIndex = _bluetoothDevices.indexWhere(
-              (element) => element.address == r.device.address,
-            );
-            if (existingIndex >= 0) {
-              _bluetoothDevices[existingIndex] = r.device;
-            } else {
-              _bluetoothDevices.add(r.device);
-            }
-          });
+          if (mounted) {
+            setState(() {
+              final existingIndex = _bluetoothDevices.indexWhere(
+                (element) => element.address == r.device.address,
+              );
+              if (existingIndex >= 0) {
+                _bluetoothDevices[existingIndex] = r.device;
+              } else {
+                _bluetoothDevices.add(r.device);
+              }
+            });
+          }
         })
         .onDone(() {
-          setState(() {
-            _isDiscovering = false;
-          });
+          if (mounted) {
+            setState(() {
+              _isDiscovering = false;
+            });
+          }
         });
   }
 
   Future<void> _connectToBluetooth() async {
     if (_selectedBluetoothDevice == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Please select a Bluetooth device.')),
-      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Please select a Bluetooth device.')),
+        );
+      }
       return;
     }
     try {
       await _connectionService.connectToBluetooth(_selectedBluetoothDevice!);
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            'Connected to ${_selectedBluetoothDevice!.name ?? _selectedBluetoothDevice!.address}',
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              'Connected to ${_selectedBluetoothDevice!.name ?? _selectedBluetoothDevice!.address}',
+            ),
           ),
-        ),
-      );
-      setState(() {
-        _rawDataBuffer.clear();
-      });
+        );
+        setState(() {
+          _rawDataBuffer.clear();
+        });
+      }
     } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Error connecting to Bluetooth: $e')),
-      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error connecting to Bluetooth: $e')),
+        );
+      }
     }
   }
 
   Future<void> _disconnect() async {
     try {
       await _connectionService.disconnect();
-      setState(() {
-        _rawDataBuffer.clear();
-        _selectedBluetoothDevice = null; // Clear selected device on disconnect
-      });
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('Disconnected.')));
+      if (mounted) {
+        setState(() {
+          _rawDataBuffer.clear();
+          _selectedBluetoothDevice = null;
+        });
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('Disconnected.')));
+      }
     } catch (e) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('Error disconnecting: $e')));
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Error disconnecting: $e')));
+      }
     }
   }
 
   // New method to handle sending the LED Flash configuration
   void _setLEDParameters() {
-    // Determine the boolean value (1 for ON, 0 for OFF)
     final flashValue = _isFlashOn ? 1 : 0;
-    // Format the brightness level, rounding to the nearest integer
     final brightnessValue = _brightnessLevel.round();
-    // Construct the final serial data string
     final dataToSend = "@SetLED,$flashValue,$brightnessValue\n";
 
-    // Call the sendData method from the connection service
     _connectionService.sendData(dataToSend);
 
-    ScaffoldMessenger.of(
-      context,
-    ).showSnackBar(SnackBar(content: Text('Sent command: $dataToSend')));
+    if (mounted) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Sent command: $dataToSend')));
+    }
   }
 
   @override
@@ -263,7 +302,6 @@ class _SettingsPageState extends State<SettingsPage> {
               "Bluetooth Connection",
               style: TextStyle(fontWeight: FontWeight.bold, fontSize: 20),
             ),
-            // Updated Bluetooth section to place the refresh icon inside the container
             Container(
               margin: const EdgeInsets.only(top: 8),
               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
@@ -289,7 +327,6 @@ class _SettingsPageState extends State<SettingsPage> {
                         "Available Devices",
                         style: TextStyle(fontWeight: FontWeight.bold),
                       ),
-                      // The Bluetooth refresh icon is now here, inside the container
                       GestureDetector(
                         onTap:
                             _isDiscovering
@@ -334,8 +371,7 @@ class _SettingsPageState extends State<SettingsPage> {
                               ),
                             )
                             : ListView.builder(
-                              physics:
-                                  const AlwaysScrollableScrollPhysics(), // Always show scroll indicator
+                              physics: const AlwaysScrollableScrollPhysics(),
                               itemCount: _bluetoothDevices.length,
                               itemBuilder: (context, index) {
                                 BluetoothDevice device =
@@ -353,10 +389,7 @@ class _SettingsPageState extends State<SettingsPage> {
                                   selected:
                                       _selectedBluetoothDevice?.address ==
                                       device.address,
-                                  selectedTileColor:
-                                      Colors
-                                          .blue
-                                          .shade100, // Highlight color for selected tile
+                                  selectedTileColor: Colors.blue.shade100,
                                   onTap: () {
                                     setState(() {
                                       _selectedBluetoothDevice = device;
@@ -583,7 +616,6 @@ class _SettingsPageState extends State<SettingsPage> {
                 ),
               ),
             ),
-            // New AS7341 LED Flash Settings section
             const Padding(
               padding: EdgeInsets.only(top: 16.0, bottom: 8.0),
               child: Text(
@@ -637,7 +669,7 @@ class _SettingsPageState extends State<SettingsPage> {
                       Expanded(
                         child: Slider(
                           value: _brightnessLevel,
-                          min: 10,
+                          min: 20,
                           max: 100,
                           divisions: 90,
                           label: _brightnessLevel.round().toString(),
